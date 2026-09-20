@@ -28,6 +28,7 @@ use crate::{
         derive_login_key,
         encrypt_message,
         md5_crypt,
+        wire_len,
     },
     error::{
         NewcamdError,
@@ -211,11 +212,7 @@ impl Client {
     }
 
     pub async fn send_ecm(&self, req: &EcmRequest) -> Result<EcmResponse> {
-        if req.section.len() < 3 {
-            return Err(NewcamdError::InvalidData(
-                "ECM section must include at least 3 bytes".to_string(),
-            ));
-        }
+        check_section(&req.section)?;
 
         if self
             .ecm_busy
@@ -253,11 +250,7 @@ impl Client {
     }
 
     pub async fn send_emm(&self, section: &[u8], sid: u16, caid: u16, provider: u32) -> Result<()> {
-        if section.len() < 3 {
-            return Err(NewcamdError::InvalidData(
-                "EMM section must include at least 3 bytes".to_string(),
-            ));
-        }
+        check_section(section)?;
 
         let mut payload = section.to_vec();
         patch_payload_len(&mut payload);
@@ -289,6 +282,25 @@ impl Client {
             request_provider
         }
     }
+}
+
+/// Rejects a section the connection task could not send, so a bad packet fails
+/// the caller instead of the connection.
+fn check_section(section: &[u8]) -> Result<()> {
+    if section.len() < 3 {
+        return Err(NewcamdError::InvalidData(
+            "section must include at least 3 bytes".to_string(),
+        ));
+    }
+
+    if wire_len(HEADER_SIZE_525 + section.len()) >= CWS_NETMSGSIZE {
+        return Err(NewcamdError::InvalidData(format!(
+            "section of {} bytes does not fit a newcamd message",
+            section.len()
+        )));
+    }
+
+    Ok(())
 }
 
 impl Connection {

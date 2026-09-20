@@ -36,13 +36,20 @@ pub fn derive_login_key(key1: &[u8], key2: &[u8]) -> Result<[u8; 16]> {
     Ok(key_spread(&des14))
 }
 
+fn pad_len(plain_len: usize) -> usize {
+    (8 - ((plain_len - 1) % 8)) % 8
+}
+
+pub fn wire_len(plain_len: usize) -> usize {
+    plain_len + pad_len(plain_len) + 1 + 8
+}
+
 pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
-    let no_pad_bytes = (8 - ((buffer.len() - 1) % 8)) % 8;
-    if buffer.len() + no_pad_bytes + 1 + 8 >= crate::protocol::CWS_NETMSGSIZE {
+    if wire_len(buffer.len()) >= crate::protocol::CWS_NETMSGSIZE {
         return Err(NewcamdError::Protocol("packet too large"));
     }
 
-    for _ in 0 .. no_pad_bytes {
+    for _ in 0 .. pad_len(buffer.len()) {
         buffer.push(rand::random());
     }
 
@@ -241,7 +248,9 @@ mod tests {
         decrypt_message,
         encrypt_message,
         md5_crypt,
+        wire_len,
     };
+    use crate::protocol::CWS_NETMSGSIZE;
 
     const KEY: [u8; 16] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
@@ -267,6 +276,17 @@ mod tests {
         let plain_len = decrypt_message(&mut wire, &KEY).unwrap();
         assert_eq!(plain_len, 18);
         assert_eq!(&wire[2 .. 18], &(0_u8 .. 16).collect::<Vec<_>>()[..]);
+    }
+
+    #[test]
+    fn wire_len_matches_encrypt_message() {
+        for plain_len in 3 .. CWS_NETMSGSIZE {
+            let mut buffer = vec![0; plain_len];
+            match encrypt_message(&mut buffer, &KEY) {
+                Ok(()) => assert_eq!(buffer.len(), wire_len(plain_len)),
+                Err(_) => assert!(wire_len(plain_len) >= CWS_NETMSGSIZE),
+            }
+        }
     }
 
     #[test]
