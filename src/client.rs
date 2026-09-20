@@ -303,6 +303,8 @@ fn check_section(section: &[u8]) -> Result<()> {
 }
 
 impl Connection {
+    /// Serves the connection until the server fails or the `Client` is dropped,
+    /// which closes both command channels.
     pub async fn run(mut self) -> Result<()> {
         loop {
             while let Some(packet) = self.read_buffered_network_message()? {
@@ -317,10 +319,12 @@ impl Connection {
                     let pending = self.pending_ecm.take().expect("ECM is pending while its timeout branch is enabled");
                     let _ = pending.response_tx.send(Err(NewcamdError::Protocol("timeout while waiting for ECM response")));
                 }
-                Some(command) = self.ecm_rx.recv() => {
+                command = self.ecm_rx.recv() => {
+                    let Some(command) = command else { return Ok(()) };
                     self.send_ecm_command(command).await?;
                 }
-                Some(command) = self.emm_rx.recv() => {
+                command = self.emm_rx.recv() => {
+                    let Some(command) = command else { return Ok(()) };
                     self.send_emm_command(command).await?;
                 }
             }
@@ -673,4 +677,49 @@ fn parse_buffered_network_message(
     input_buffer.drain(.. total_len);
 
     Ok(Some(packet))
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::TcpListener;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn run_exits_when_client_is_dropped() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let stream = TcpStream::connect(listener.local_addr().unwrap())
+            .await
+            .unwrap();
+        let (_server, _) = listener.accept().await.unwrap();
+
+        let (ecm_tx, ecm_rx) = mpsc::channel(1);
+        let (emm_tx, emm_rx) = mpsc::channel(1);
+        let connection = Connection {
+            stream,
+            read_timeout: Duration::from_secs(1),
+            msg_id: 0,
+            session_key: [0; 16],
+            ecm_rx,
+            emm_rx,
+            pending_ecm: None,
+            input_buffer: Vec::new(),
+            card_data: CardData {
+                caid: 0,
+                au: false,
+                ua: [0; 8],
+                providers: Vec::new(),
+                provider_count: 0,
+                raw_payload: Vec::new(),
+            },
+        };
+        let task = tokio::spawn(connection.run());
+
+        drop((ecm_tx, emm_tx));
+        let result = timeout(Duration::from_secs(1), task)
+            .await
+            .expect("run must exit once the senders are gone")
+            .unwrap();
+        assert!(result.is_ok());
+    }
 }
