@@ -11,7 +11,7 @@ pub mod msg {
     pub const MSG_CARD_DATA: u8 = 0xE4;
     pub const MSG_KEEPALIVE: u8 = 0xFD;
     /// DVB CA section table_id range used for EMM (ECM uses 0x80/0x81).
-    pub const EMM_TABLE_ID_RANGE: std::ops::RangeInclusive<u8> = 0x82..=0x8F;
+    pub const EMM_TABLE_ID_RANGE: std::ops::RangeInclusive<u8> = 0x82 ..= 0x8F;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -60,7 +60,7 @@ pub fn parse_decrypted_525(buffer: &[u8]) -> Option<NewcamdPacket> {
         return None;
     }
 
-    let payload = &buffer[HEADER_SIZE_525..HEADER_SIZE_525 + payload_len];
+    let payload = &buffer[HEADER_SIZE_525 .. HEADER_SIZE_525 + payload_len];
     if payload.len() < 3 {
         return None;
     }
@@ -80,6 +80,6 @@ pub fn parse_decrypted_525(buffer: &[u8]) -> Option<NewcamdPacket> {
             flags,
         },
         command: payload[0],
-        data: payload[3..].to_vec(),
+        data: payload[3 ..].to_vec(),
     })
 }

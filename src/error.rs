@@ -1,4 +1,7 @@
-use std::fmt::{Display, Formatter};
+use std::fmt::{
+    Display,
+    Formatter,
+};
 
 pub type Result<T> = std::result::Result<T, NewcamdError>;
 

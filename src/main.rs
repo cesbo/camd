@@ -1,6 +1,10 @@
 use std::env;
 
-use newcamd_lib::{Client, EcmRequest, NewcamdConfig};
+use newcamd_lib::{
+    Client,
+    EcmRequest,
+    NewcamdConfig,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> newcamd_lib::Result<()> {
@@ -144,10 +148,10 @@ fn parse_hex(value: &str) -> newcamd_lib::Result<Vec<u8>> {
         ));
     }
 
-    (0..value.len())
+    (0 .. value.len())
         .step_by(2)
         .map(|index| {
-            u8::from_str_radix(&value[index..index + 2], 16).map_err(|_| {
+            u8::from_str_radix(&value[index .. index + 2], 16).map_err(|_| {
                 newcamd_lib::NewcamdError::InvalidData(
                     "NEWCAMD_ECM_HEX must contain only hexadecimal characters".to_string(),
                 )

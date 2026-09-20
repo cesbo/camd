@@ -1,8 +1,21 @@
-use des::TdesEde2;
-use des::cipher::{Block, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
-use md5::{Digest, Md5};
+use des::{
+    TdesEde2,
+    cipher::{
+        Block,
+        BlockCipherDecrypt,
+        BlockCipherEncrypt,
+        KeyInit,
+    },
+};
+use md5::{
+    Digest,
+    Md5,
+};
 
-use crate::error::{NewcamdError, Result};
+use crate::error::{
+    NewcamdError,
+    Result,
+};
 
 const MD5_CRYPT_B64: &[u8; 64] =
     b"./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
@@ -29,12 +42,12 @@ pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
         return Err(NewcamdError::Protocol("packet too large"));
     }
 
-    for _ in 0..no_pad_bytes {
+    for _ in 0 .. no_pad_bytes {
         buffer.push(rand::random());
     }
 
     let mut checksum = 0_u8;
-    for byte in &buffer[2..] {
+    for byte in &buffer[2 ..] {
         checksum ^= *byte;
     }
     buffer.push(checksum);
@@ -43,9 +56,9 @@ pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
     let cipher = TdesEde2::new(des_key.into());
 
     let mut work_ivec = ivec;
-    for block in buffer[2..].chunks_exact_mut(8) {
+    for block in buffer[2 ..].chunks_exact_mut(8) {
         let block: &mut Block<TdesEde2> = block.try_into().expect("8-byte chunk");
-        for i in 0..8 {
+        for i in 0 .. 8 {
             block[i] ^= work_ivec[i];
         }
         cipher.encrypt_block(block);
@@ -64,26 +77,26 @@ pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
     let data_len = buffer.len() - 8;
     let cipher = TdesEde2::new(des_key.into());
     let mut next_ivec = [0_u8; 8];
-    next_ivec.copy_from_slice(&buffer[data_len..]);
+    next_ivec.copy_from_slice(&buffer[data_len ..]);
 
     let mut pos = 2;
     while pos < data_len {
         let mut ivec = [0_u8; 8];
         ivec.copy_from_slice(&next_ivec);
-        next_ivec.copy_from_slice(&buffer[pos..pos + 8]);
+        next_ivec.copy_from_slice(&buffer[pos .. pos + 8]);
 
-        let block: &mut Block<TdesEde2> = (&mut buffer[pos..pos + 8])
+        let block: &mut Block<TdesEde2> = (&mut buffer[pos .. pos + 8])
             .try_into()
             .expect("8-byte chunk");
         cipher.decrypt_block(block);
-        for i in 0..8 {
+        for i in 0 .. 8 {
             block[i] ^= ivec[i];
         }
         pos += 8;
     }
 
     let mut checksum = 0_u8;
-    for byte in &buffer[2..data_len] {
+    for byte in &buffer[2 .. data_len] {
         checksum ^= *byte;
     }
     if checksum != 0 {
@@ -112,7 +125,7 @@ pub fn md5_crypt(password: &str, salt: &str) -> String {
     let mut pw_len = password_bytes.len();
     while pw_len > 0 {
         let take = pw_len.min(16);
-        ctx.update(&alt_sum[..take]);
+        ctx.update(&alt_sum[.. take]);
         pw_len -= take;
     }
 
@@ -128,7 +141,7 @@ pub fn md5_crypt(password: &str, salt: &str) -> String {
 
     let mut final_sum = ctx.finalize().to_vec();
 
-    for i in 0..1000 {
+    for i in 0 .. 1000 {
         let mut loop_ctx = Md5::new();
         if (i & 1) == 1 {
             loop_ctx.update(password_bytes);
@@ -172,7 +185,7 @@ fn extract_salt(raw: &str) -> String {
         value = stripped;
     }
     if let Some(pos) = value.find('$') {
-        value = &value[..pos];
+        value = &value[.. pos];
     }
     value.chars().take(8).collect()
 }
@@ -180,7 +193,7 @@ fn extract_salt(raw: &str) -> String {
 fn to_b64(b2: u8, b1: u8, b0: u8, count: usize) -> String {
     let mut value = ((b2 as u32) << 16) | ((b1 as u32) << 8) | (b0 as u32);
     let mut out = String::with_capacity(count);
-    for _ in 0..count {
+    for _ in 0 .. count {
         out.push(MD5_CRYPT_B64[(value & 0x3F) as usize] as char);
         value >>= 6;
     }
@@ -213,7 +226,7 @@ fn key_spread(normal: &[u8; 14]) -> [u8; 16] {
 fn adjust_odd_parity(key: &mut [u8]) {
     for byte in key.iter_mut() {
         let mut parity = 1_u8;
-        for bit in 1..8 {
+        for bit in 1 .. 8 {
             if ((*byte >> bit) & 0x1) == 1 {
                 parity ^= 1;
             }
@@ -224,7 +237,11 @@ fn adjust_odd_parity(key: &mut [u8]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{decrypt_message, encrypt_message, md5_crypt};
+    use super::{
+        decrypt_message,
+        encrypt_message,
+        md5_crypt,
+    };
 
     const KEY: [u8; 16] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
@@ -249,7 +266,7 @@ mod tests {
         ];
         let plain_len = decrypt_message(&mut wire, &KEY).unwrap();
         assert_eq!(plain_len, 18);
-        assert_eq!(&wire[2..18], &(0_u8..16).collect::<Vec<_>>()[..]);
+        assert_eq!(&wire[2 .. 18], &(0_u8 .. 16).collect::<Vec<_>>()[..]);
     }
 
     #[test]
@@ -259,7 +276,7 @@ mod tests {
         encrypt_message(&mut buffer, &KEY).unwrap();
         assert_eq!((buffer.len() - 2) % 8, 0);
         let plain_len = decrypt_message(&mut buffer, &KEY).unwrap();
-        assert_eq!(&buffer[..plain.len()], &plain[..]);
+        assert_eq!(&buffer[.. plain.len()], &plain[..]);
         assert!(plain_len >= plain.len());
     }
 }

@@ -1,17 +1,48 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::{
+    sync::atomic::{
+        AtomicBool,
+        Ordering,
+    },
+    time::Duration,
+};
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::{Instant, timeout};
+use tokio::{
+    io::{
+        AsyncReadExt,
+        AsyncWriteExt,
+    },
+    net::TcpStream,
+    sync::{
+        mpsc,
+        oneshot,
+    },
+    time::{
+        Instant,
+        timeout,
+    },
+};
 
-use crate::crypto::{decrypt_message, derive_login_key, encrypt_message, md5_crypt};
-use crate::error::{NewcamdError, Result};
-use crate::protocol::msg;
-use crate::protocol::{
-    CWS_NETMSGSIZE, HEADER_SIZE_525, LOGIN_INIT_SEQ_LEN, NewcamdPacket, encode_payload,
-    parse_decrypted_525, patch_payload_len,
+use crate::{
+    crypto::{
+        decrypt_message,
+        derive_login_key,
+        encrypt_message,
+        md5_crypt,
+    },
+    error::{
+        NewcamdError,
+        Result,
+    },
+    protocol::{
+        CWS_NETMSGSIZE,
+        HEADER_SIZE_525,
+        LOGIN_INIT_SEQ_LEN,
+        NewcamdPacket,
+        encode_payload,
+        msg,
+        parse_decrypted_525,
+        patch_payload_len,
+    },
 };
 
 const ECM_QUEUE_CAPACITY: usize = 1;
@@ -302,7 +333,6 @@ impl Connection {
         }
 
         if msg::EMM_TABLE_ID_RANGE.contains(&packet.command) {
-            // EMM packet received, but we don't have any EMM requests pending, so we just ignore it ???
             return Ok(());
         }
 
@@ -444,13 +474,13 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
 
     let card_caid = card_data_answer
         .data
-        .get(1..3)
+        .get(1 .. 3)
         .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
         .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?;
 
     let ua = card_data_answer
         .data
-        .get(3..11)
+        .get(3 .. 11)
         .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?
         .try_into()
         .map_err(|_| NewcamdError::Protocol("invalid CARD_DATA payload"))?;
@@ -463,14 +493,16 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         as usize;
     let provider_data = card_data_answer
         .data
-        .get(12..)
+        .get(12 ..)
         .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?;
     let providers = provider_data
         .chunks_exact(11)
         .take(provider_count)
         .map(|entry| CardProvider {
             ident: [entry[0], entry[1], entry[2]],
-            sa: entry[3..11].try_into().expect("provider entry has 8-byte SA"),
+            sa: entry[3 .. 11]
+                .try_into()
+                .expect("provider entry has 8-byte SA"),
         })
         .collect::<Vec<_>>();
     if providers.len() != provider_count {
@@ -511,7 +543,7 @@ fn decode_ecm_response(packet: NewcamdPacket) -> Result<EcmResponse> {
         ));
     }
 
-    cw.copy_from_slice(&packet.data[..16]);
+    cw.copy_from_slice(&packet.data[.. 16]);
     Ok(EcmResponse {
         found: true,
         cw,
@@ -543,9 +575,9 @@ async fn send_network_message(
         0
     };
 
-    netbuf[2..4].copy_from_slice(&current_msg_id.to_be_bytes());
-    netbuf[4..6].copy_from_slice(&sid.to_be_bytes());
-    netbuf[6..8].copy_from_slice(&caid.to_be_bytes());
+    netbuf[2 .. 4].copy_from_slice(&current_msg_id.to_be_bytes());
+    netbuf[4 .. 6].copy_from_slice(&sid.to_be_bytes());
+    netbuf[6 .. 8].copy_from_slice(&caid.to_be_bytes());
     netbuf[8] = ((provider >> 16) & 0xFF) as u8;
     netbuf[9] = ((provider >> 8) & 0xFF) as u8;
     netbuf[10] = (provider & 0xFF) as u8;
@@ -624,11 +656,11 @@ fn parse_buffered_network_message(
         return Ok(None);
     }
 
-    let plain_len = decrypt_message(&mut input_buffer[..total_len], des_key)?;
-    let packet = parse_decrypted_525(&input_buffer[..plain_len]).ok_or(NewcamdError::Protocol(
+    let plain_len = decrypt_message(&mut input_buffer[.. total_len], des_key)?;
+    let packet = parse_decrypted_525(&input_buffer[.. plain_len]).ok_or(NewcamdError::Protocol(
         "failed to parse decrypted newcamd525 packet",
     ))?;
-    input_buffer.drain(..total_len);
+    input_buffer.drain(.. total_len);
 
     Ok(Some(packet))
 }
