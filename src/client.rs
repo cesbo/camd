@@ -1,4 +1,5 @@
 use std::{
+    net::SocketAddr,
     sync::atomic::{
         AtomicBool,
         Ordering,
@@ -51,11 +52,10 @@ const EMM_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone)]
 pub struct NewcamdConfig {
-    pub host: String,
-    pub port: u16,
+    pub addr: SocketAddr,
     pub username: String,
     pub password: String,
-    pub des_key_14: [u8; 14],
+    pub des_key: [u8; 14],
     pub provider: u32,
     pub connect_timeout: Duration,
     pub read_timeout: Duration,
@@ -64,11 +64,10 @@ pub struct NewcamdConfig {
 impl Default for NewcamdConfig {
     fn default() -> Self {
         Self {
-            host: "127.0.0.1".to_string(),
-            port: 15000,
+            addr: SocketAddr::from(([127, 0, 0, 1], 15000)),
             username: String::new(),
             password: String::new(),
-            des_key_14: [0_u8; 14],
+            des_key: [0_u8; 14],
             provider: 0,
             connect_timeout: Duration::from_secs(5),
             read_timeout: Duration::from_secs(5),
@@ -431,9 +430,8 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         ));
     }
 
-    let endpoint = format!("{}:{}", config.host, config.port);
     let configured_provider = config.provider;
-    let mut stream = timeout(config.connect_timeout, TcpStream::connect(endpoint))
+    let mut stream = timeout(config.connect_timeout, TcpStream::connect(config.addr))
         .await
         .map_err(|_| NewcamdError::Protocol("connect timeout"))??;
 
@@ -442,7 +440,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         .await
         .map_err(|_| NewcamdError::Protocol("timeout while reading server init sequence"))??;
 
-    let login_key = derive_login_key(&config.des_key_14, &keymod)?;
+    let login_key = derive_login_key(&config.des_key, &keymod)?;
     let password_crypt = md5_crypt(&config.password, "abcdefgh");
 
     let mut login_data = Vec::with_capacity(config.username.len() + password_crypt.len() + 2);
@@ -465,7 +463,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         return Err(NewcamdError::Protocol("expected LOGIN_ACK packet"));
     }
 
-    let session_key = derive_login_key(&config.des_key_14, password_crypt.as_bytes())?;
+    let session_key = derive_login_key(&config.des_key, password_crypt.as_bytes())?;
     let card_data_req = encode_payload(msg::MSG_CARD_DATA_REQ, &[]);
     let _ = send_network_message(
         &mut stream,
