@@ -1,8 +1,6 @@
-use des::Des;
-use des::cipher::generic_array::GenericArray;
-use des::cipher::{BlockDecrypt, BlockEncrypt, KeyInit};
+use des::TdesEde2;
+use des::cipher::{Block, BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
 use md5::{Digest, Md5};
-use rand::RngCore;
 
 use crate::error::{NewcamdError, Result};
 
@@ -31,9 +29,8 @@ pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
         return Err(NewcamdError::Protocol("packet too large"));
     }
 
-    let mut rng = rand::thread_rng();
     for _ in 0..no_pad_bytes {
-        buffer.push((rng.next_u32() & 0xFF) as u8);
+        buffer.push(rand::random());
     }
 
     let mut checksum = 0_u8;
@@ -42,15 +39,16 @@ pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
     }
     buffer.push(checksum);
 
-    let mut ivec = [0_u8; 8];
-    rng.fill_bytes(&mut ivec);
+    let ivec: [u8; 8] = rand::random();
+    let cipher = TdesEde2::new(des_key.into());
 
     let mut work_ivec = ivec;
     for block in buffer[2..].chunks_exact_mut(8) {
+        let block: &mut Block<TdesEde2> = block.try_into().expect("8-byte chunk");
         for i in 0..8 {
             block[i] ^= work_ivec[i];
         }
-        triple_des_hash_encrypt_block(block, des_key)?;
+        cipher.encrypt_block(block);
         work_ivec.copy_from_slice(block);
     }
 
@@ -64,6 +62,7 @@ pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
     }
 
     let data_len = buffer.len() - 8;
+    let cipher = TdesEde2::new(des_key.into());
     let mut next_ivec = [0_u8; 8];
     next_ivec.copy_from_slice(&buffer[data_len..]);
 
@@ -73,8 +72,10 @@ pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
         ivec.copy_from_slice(&next_ivec);
         next_ivec.copy_from_slice(&buffer[pos..pos + 8]);
 
-        let block = &mut buffer[pos..pos + 8];
-        triple_des_crypt_decrypt_block(block, des_key)?;
+        let block: &mut Block<TdesEde2> = (&mut buffer[pos..pos + 8])
+            .try_into()
+            .expect("8-byte chunk");
+        cipher.decrypt_block(block);
         for i in 0..8 {
             block[i] ^= ivec[i];
         }
@@ -221,41 +222,44 @@ fn adjust_odd_parity(key: &mut [u8]) {
     }
 }
 
-fn triple_des_hash_encrypt_block(block: &mut [u8], key: &[u8; 16]) -> Result<()> {
-    let k1 =
-        Des::new_from_slice(&key[0..8]).map_err(|_| NewcamdError::Crypto("invalid DES key K1"))?;
-    let k2 =
-        Des::new_from_slice(&key[8..16]).map_err(|_| NewcamdError::Crypto("invalid DES key K2"))?;
-
-    let mut b = GenericArray::clone_from_slice(block);
-    k1.encrypt_block(&mut b);
-    k2.decrypt_block(&mut b);
-    k1.encrypt_block(&mut b);
-    block.copy_from_slice(&b);
-    Ok(())
-}
-
-fn triple_des_crypt_decrypt_block(block: &mut [u8], key: &[u8; 16]) -> Result<()> {
-    let k1 =
-        Des::new_from_slice(&key[0..8]).map_err(|_| NewcamdError::Crypto("invalid DES key K1"))?;
-    let k2 =
-        Des::new_from_slice(&key[8..16]).map_err(|_| NewcamdError::Crypto("invalid DES key K2"))?;
-
-    let mut b = GenericArray::clone_from_slice(block);
-    k1.decrypt_block(&mut b);
-    k2.encrypt_block(&mut b);
-    k1.decrypt_block(&mut b);
-    block.copy_from_slice(&b);
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
-    use super::md5_crypt;
+    use super::{decrypt_message, encrypt_message, md5_crypt};
+
+    const KEY: [u8; 16] = [
+        0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
+        0x10,
+    ];
 
     #[test]
     fn md5_crypt_known_vector() {
         let hash = md5_crypt("password", "abcdefgh");
         assert_eq!(hash, "$1$abcdefgh$G//4keteveJp0qb8z2DxG/");
+    }
+
+    /// Ciphertext from `openssl enc -des-ede-cbc -K <KEY> -iv 0011223344556677 -nopad`
+    /// over the bytes 0x00..=0x0F, whose XOR checksum is zero.
+    #[test]
+    fn decrypt_message_openssl_vector() {
+        let mut wire = vec![
+            0x00, 0x00, // length prefix, not encrypted
+            0x81, 0x8c, 0x0b, 0xf6, 0x65, 0xca, 0x88, 0xed, 0x55, 0x29, 0x6f, 0x9d, 0xbc, 0xe2,
+            0xaf, 0x50, // ciphertext
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, // iv
+        ];
+        let plain_len = decrypt_message(&mut wire, &KEY).unwrap();
+        assert_eq!(plain_len, 18);
+        assert_eq!(&wire[2..18], &(0_u8..16).collect::<Vec<_>>()[..]);
+    }
+
+    #[test]
+    fn encrypt_decrypt_roundtrip() {
+        let mut buffer = vec![0, 0, 0xE3, 0x00, 0x00, 0xAA, 0xBB, 0xCC, 0xDD];
+        let plain = buffer.clone();
+        encrypt_message(&mut buffer, &KEY).unwrap();
+        assert_eq!((buffer.len() - 2) % 8, 0);
+        let plain_len = decrypt_message(&mut buffer, &KEY).unwrap();
+        assert_eq!(&buffer[..plain.len()], &plain[..]);
+        assert!(plain_len >= plain.len());
     }
 }

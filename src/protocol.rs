@@ -1,4 +1,5 @@
-pub const CWS_NETMSGSIZE: usize = 500;
+/// 12-byte header plus the largest DVB private section (1024).
+pub const CWS_NETMSGSIZE: usize = HEADER_SIZE_525 + 1024;
 pub const LOGIN_INIT_SEQ_LEN: usize = 14;
 pub const HEADER_SIZE_525: usize = 12;
 
