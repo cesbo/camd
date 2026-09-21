@@ -272,7 +272,7 @@ impl Connection {
                 }
                 () = tokio::time::sleep_until(self.pending_ecm.as_ref().map(|pending| pending.deadline).unwrap_or_else(Instant::now)), if self.pending_ecm.is_some() => {
                     let pending = self.pending_ecm.take().expect("ECM is pending while its timeout branch is enabled");
-                    let _ = pending.response_tx.send(Err(Error::Protocol("timeout while waiting for ECM response")));
+                    let _ = pending.response_tx.send(Err(Error::Timeout));
                 }
                 command = self.ecm_rx.recv() => {
                     let Some(command) = command else { return Ok(()) };
@@ -391,14 +391,10 @@ async fn perform_handshake(config: Config) -> Result<HandshakeState> {
     }
 
     let configured_provider = config.provider;
-    let mut stream = timeout(config.connect_timeout, TcpStream::connect(config.addr))
-        .await
-        .map_err(|_| Error::Protocol("connect timeout"))??;
+    let mut stream = timeout(config.connect_timeout, TcpStream::connect(config.addr)).await??;
 
     let mut keymod = [0_u8; LOGIN_INIT_SEQ_LEN];
-    timeout(config.io_timeout, stream.read_exact(&mut keymod))
-        .await
-        .map_err(|_| Error::Protocol("timeout while reading server init sequence"))??;
+    timeout(config.io_timeout, stream.read_exact(&mut keymod)).await??;
 
     let login_key = derive_login_key(&config.des_key, &keymod)?;
     let password_crypt = md5_crypt(&config.password, "abcdefgh");
@@ -551,9 +547,7 @@ async fn send_network_message(
     to_encrypt[0] = ((encrypted_wire_len >> 8) & 0xFF) as u8;
     to_encrypt[1] = (encrypted_wire_len & 0xFF) as u8;
 
-    timeout(io_timeout, stream.write_all(&to_encrypt))
-        .await
-        .map_err(|_| Error::Protocol("timeout while writing packet"))??;
+    timeout(io_timeout, stream.write_all(&to_encrypt)).await??;
 
     Ok(current_msg_id)
 }
@@ -580,9 +574,7 @@ async fn read_into_buffer(
     io_timeout: Option<Duration>,
 ) -> Result<()> {
     let read = if let Some(timeout_duration) = io_timeout {
-        timeout(timeout_duration, stream.read_buf(input_buffer))
-            .await
-            .map_err(|_| Error::Protocol("timeout while reading packet"))??
+        timeout(timeout_duration, stream.read_buf(input_buffer)).await??
     } else {
         stream.read_buf(input_buffer).await?
     };

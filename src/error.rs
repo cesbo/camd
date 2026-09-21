@@ -11,6 +11,8 @@ pub enum Error {
     Protocol(&'static str),
     AuthenticationFailed,
     InvalidData(String),
+    /// Connect, read, write or ECM reply did not complete within `io_timeout`.
+    Timeout,
 }
 
 impl Display for Error {
@@ -20,6 +22,7 @@ impl Display for Error {
             Self::Protocol(msg) => write!(f, "Protocol error: {msg}"),
             Self::AuthenticationFailed => write!(f, "Authentication failed"),
             Self::InvalidData(msg) => write!(f, "Invalid data: {msg}"),
+            Self::Timeout => write!(f, "Timeout"),
         }
     }
 }
@@ -29,5 +32,11 @@ impl std::error::Error for Error {}
 impl From<std::io::Error> for Error {
     fn from(value: std::io::Error) -> Self {
         Self::Io(value)
+    }
+}
+
+impl From<tokio::time::error::Elapsed> for Error {
+    fn from(_: tokio::time::error::Elapsed) -> Self {
+        Self::Timeout
     }
 }
