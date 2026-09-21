@@ -25,6 +25,10 @@ use tokio::{
         timeout,
     },
 };
+use tracing::{
+    debug,
+    trace,
+};
 
 use super::{
     crypto::{
@@ -92,6 +96,7 @@ pub struct Client {
 
 pub struct Connection {
     stream: TcpStream,
+    addr: SocketAddr,
     io_timeout: Duration,
     msg_id: u16,
     session_key: [u8; 16],
@@ -131,6 +136,7 @@ impl Drop for EcmBusyGuard<'_> {
 
 struct HandshakeState {
     stream: TcpStream,
+    addr: SocketAddr,
     io_timeout: Duration,
     msg_id: u16,
     session_key: [u8; 16],
@@ -154,6 +160,7 @@ impl Client {
 
         let connection = Connection {
             stream: handshake.stream,
+            addr: handshake.addr,
             io_timeout: handshake.io_timeout,
             msg_id: handshake.msg_id,
             session_key: handshake.session_key,
@@ -298,11 +305,13 @@ impl Connection {
 
     async fn handle_server_packet(&mut self, packet: Packet) -> Result<()> {
         if packet.command == msg::MSG_KEEPALIVE {
+            trace!(addr = %self.addr, "keepalive");
             self.send_keepalive_response(&packet).await?;
             return Ok(());
         }
 
         if msg::EMM_TABLE_ID_RANGE.contains(&packet.command) {
+            trace!(addr = %self.addr, command = format_args!("{:#04X}", packet.command), "EMM acknowledged");
             return Ok(());
         }
 
@@ -313,7 +322,14 @@ impl Connection {
             .unwrap_or(false);
 
         if !should_consume_ecm {
-            // Unknown or unexpected packet, ignore it instead of killing the connection.
+            // Ignored: a reply after the ECM timed out, an ADDCARD 0xD3 from a multi-card server,
+            // or something unknown.
+            debug!(
+                addr = %self.addr,
+                command = format_args!("{:#04X}", packet.command),
+                msg_id = packet.header.msg_id,
+                "ignored packet"
+            );
             return Ok(());
         }
 
@@ -484,6 +500,7 @@ async fn perform_handshake(config: Config) -> Result<HandshakeState> {
 
     Ok(HandshakeState {
         stream,
+        addr: config.addr,
         io_timeout: config.io_timeout,
         msg_id,
         session_key,
@@ -657,6 +674,7 @@ mod tests {
         let (ecm_tx, ecm_rx) = mpsc::channel(1);
         let (emm_tx, emm_rx) = mpsc::channel(1);
         let connection = Connection {
+            addr: stream.peer_addr().unwrap(),
             stream,
             io_timeout: Duration::from_secs(1),
             msg_id: 0,
