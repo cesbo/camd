@@ -1,6 +1,14 @@
 [package]
 name = "camd"
 version = "0.1.0"
+description = "Client for DVB conditional access card servers"
+authors = ["Cesbo Developers Team <info@cesbo.com>"]
+license = "MIT"
+readme = "README.md"
+documentation = "https://docs.rs/camd"
+repository = "https://github.com/cesbo/camd"
+keywords = ["newcamd", "dvb", "conditional-access", "cam"]
+categories = ["network-programming", "multimedia::video"]
 edition = "2024"
 
 [dependencies]
