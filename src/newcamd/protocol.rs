@@ -24,7 +24,7 @@ pub struct Header525 {
 }
 
 #[derive(Debug, Clone)]
-pub struct NewcamdPacket {
+pub struct Packet {
     pub header: Header525,
     pub command: u8,
     pub data: Vec<u8>,
@@ -50,7 +50,7 @@ pub fn patch_payload_len(payload: &mut [u8]) {
     payload[2] = (body_len & 0xFF) as u8;
 }
 
-pub fn parse_decrypted_525(buffer: &[u8]) -> Option<NewcamdPacket> {
+pub fn parse_decrypted_525(buffer: &[u8]) -> Option<Packet> {
     if buffer.len() < 15 {
         return None;
     }
@@ -71,7 +71,7 @@ pub fn parse_decrypted_525(buffer: &[u8]) -> Option<NewcamdPacket> {
     let provider = ((buffer[8] as u32) << 16) | ((buffer[9] as u32) << 8) | (buffer[10] as u32);
     let flags = buffer[11];
 
-    Some(NewcamdPacket {
+    Some(Packet {
         header: Header525 {
             msg_id,
             sid,

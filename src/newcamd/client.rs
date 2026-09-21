@@ -23,7 +23,7 @@ use tokio::{
     },
 };
 
-use crate::{
+use super::{
     crypto::{
         decrypt_message,
         derive_login_key,
@@ -31,27 +31,30 @@ use crate::{
         md5_crypt,
         wire_len,
     },
-    error::{
-        NewcamdError,
-        Result,
-    },
     protocol::{
         CWS_NETMSGSIZE,
         HEADER_SIZE_525,
         LOGIN_INIT_SEQ_LEN,
-        NewcamdPacket,
+        Packet,
         encode_payload,
         msg,
         parse_decrypted_525,
         patch_payload_len,
     },
 };
+use crate::{
+    CardData,
+    CardProvider,
+    Error,
+    RawRequest,
+    Result,
+};
 
 const ECM_QUEUE_CAPACITY: usize = 1;
 const EMM_QUEUE_CAPACITY: usize = 32;
 
 #[derive(Debug, Clone)]
-pub struct NewcamdConfig {
+pub struct Config {
     pub addr: SocketAddr,
     pub username: String,
     pub password: String,
@@ -61,7 +64,7 @@ pub struct NewcamdConfig {
     pub io_timeout: Duration,
 }
 
-impl Default for NewcamdConfig {
+impl Default for Config {
     fn default() -> Self {
         Self {
             addr: SocketAddr::from(([127, 0, 0, 1], 15000)),
@@ -73,14 +76,6 @@ impl Default for NewcamdConfig {
             io_timeout: Duration::from_secs(5),
         }
     }
-}
-
-/// Header fields of a newcamd message.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct RawRequest {
-    pub sid: u16,
-    pub caid: u16,
-    pub provider: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -95,23 +90,7 @@ pub struct EcmRequest {
 pub struct EcmResponse {
     pub found: bool,
     pub cw: [u8; 16],
-    pub packet: NewcamdPacket,
-}
-
-#[derive(Debug, Clone)]
-pub struct CardData {
-    pub caid: u16,
-    pub au: bool,
-    pub ua: [u8; 8],
-    pub providers: Vec<CardProvider>,
-    pub provider_count: usize,
-    pub raw_payload: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct CardProvider {
-    pub ident: [u8; 3],
-    pub sa: [u8; 8],
+    pub packet: Packet,
 }
 
 pub struct Client {
@@ -171,7 +150,7 @@ struct HandshakeState {
 }
 
 impl Client {
-    pub async fn connect(config: NewcamdConfig) -> Result<(Self, Connection)> {
+    pub async fn connect(config: Config) -> Result<(Self, Connection)> {
         let handshake = perform_handshake(config).await?;
         let (ecm_tx, ecm_rx) = mpsc::channel(ECM_QUEUE_CAPACITY);
         let (emm_tx, emm_rx) = mpsc::channel(EMM_QUEUE_CAPACITY);
@@ -215,9 +194,7 @@ impl Client {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
-            return Err(NewcamdError::Protocol(
-                "previous ECM request is still pending",
-            ));
+            return Err(Error::Protocol("previous ECM request is still pending"));
         }
 
         let _guard = EcmBusyGuard {
@@ -240,11 +217,11 @@ impl Client {
         self.ecm_tx
             .send(command)
             .await
-            .map_err(|_| NewcamdError::Protocol("connection task is not running"))?;
+            .map_err(|_| Error::Protocol("connection task is not running"))?;
 
         response_rx
             .await
-            .map_err(|_| NewcamdError::Protocol("ECM response channel was closed"))?
+            .map_err(|_| Error::Protocol("ECM response channel was closed"))?
     }
 
     pub async fn send_emm(&self, section: &[u8], sid: u16, caid: u16, provider: u32) -> Result<()> {
@@ -264,7 +241,7 @@ impl Client {
         self.emm_tx
             .send(command)
             .await
-            .map_err(|_| NewcamdError::Protocol("connection task is not running"))
+            .map_err(|_| Error::Protocol("connection task is not running"))
     }
 
     fn resolve_caid(&self, request_caid: u16) -> u16 {
@@ -288,13 +265,13 @@ impl Client {
 /// the caller instead of the connection.
 fn check_section(section: &[u8]) -> Result<()> {
     if section.len() < 3 {
-        return Err(NewcamdError::InvalidData(
+        return Err(Error::InvalidData(
             "section must include at least 3 bytes".to_string(),
         ));
     }
 
     if wire_len(HEADER_SIZE_525 + section.len()) >= CWS_NETMSGSIZE {
-        return Err(NewcamdError::InvalidData(format!(
+        return Err(Error::InvalidData(format!(
             "section of {} bytes does not fit a newcamd message",
             section.len()
         )));
@@ -318,7 +295,7 @@ impl Connection {
                 }
                 () = tokio::time::sleep_until(self.pending_ecm.as_ref().map(|pending| pending.deadline).unwrap_or_else(Instant::now)), if self.pending_ecm.is_some() => {
                     let pending = self.pending_ecm.take().expect("ECM is pending while its timeout branch is enabled");
-                    let _ = pending.response_tx.send(Err(NewcamdError::Protocol("timeout while waiting for ECM response")));
+                    let _ = pending.response_tx.send(Err(Error::Protocol("timeout while waiting for ECM response")));
                 }
                 command = self.ecm_rx.recv() => {
                     let Some(command) = command else { return Ok(()) };
@@ -332,7 +309,7 @@ impl Connection {
         }
     }
 
-    fn read_buffered_network_message(&mut self) -> Result<Option<NewcamdPacket>> {
+    fn read_buffered_network_message(&mut self) -> Result<Option<Packet>> {
         let Some(packet) =
             parse_buffered_network_message(&mut self.input_buffer, &self.session_key)?
         else {
@@ -342,7 +319,7 @@ impl Connection {
         Ok(Some(packet))
     }
 
-    async fn handle_server_packet(&mut self, packet: NewcamdPacket) -> Result<()> {
+    async fn handle_server_packet(&mut self, packet: Packet) -> Result<()> {
         if packet.command == msg::MSG_KEEPALIVE {
             self.send_keepalive_response(&packet).await?;
             return Ok(());
@@ -369,7 +346,7 @@ impl Connection {
         Ok(())
     }
 
-    async fn send_keepalive_response(&mut self, packet: &NewcamdPacket) -> Result<()> {
+    async fn send_keepalive_response(&mut self, packet: &Packet) -> Result<()> {
         let payload = encode_payload(msg::MSG_KEEPALIVE, &[]);
         let _ = send_network_message(
             &mut self.stream,
@@ -390,7 +367,7 @@ impl Connection {
 
     async fn send_ecm_command(&mut self, command: EcmCommand) -> Result<()> {
         if self.pending_ecm.is_some() {
-            return Err(NewcamdError::Protocol(
+            return Err(Error::Protocol(
                 "received a new ECM while another is pending",
             ));
         }
@@ -429,9 +406,9 @@ impl Connection {
     }
 }
 
-async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
+async fn perform_handshake(config: Config) -> Result<HandshakeState> {
     if config.username.is_empty() || config.password.is_empty() {
-        return Err(NewcamdError::InvalidData(
+        return Err(Error::InvalidData(
             "username and password must not be empty".to_string(),
         ));
     }
@@ -439,12 +416,12 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
     let configured_provider = config.provider;
     let mut stream = timeout(config.connect_timeout, TcpStream::connect(config.addr))
         .await
-        .map_err(|_| NewcamdError::Protocol("connect timeout"))??;
+        .map_err(|_| Error::Protocol("connect timeout"))??;
 
     let mut keymod = [0_u8; LOGIN_INIT_SEQ_LEN];
     timeout(config.io_timeout, stream.read_exact(&mut keymod))
         .await
-        .map_err(|_| NewcamdError::Protocol("timeout while reading server init sequence"))??;
+        .map_err(|_| Error::Protocol("timeout while reading server init sequence"))??;
 
     let login_key = derive_login_key(&config.des_key, &keymod)?;
     let password_crypt = md5_crypt(&config.password, "abcdefgh");
@@ -471,10 +448,10 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
     let mut msg_id = login_answer.header.msg_id;
 
     if login_answer.command == msg::MSG_CLIENT_2_SERVER_LOGIN_NAK {
-        return Err(NewcamdError::AuthenticationFailed);
+        return Err(Error::AuthenticationFailed);
     }
     if login_answer.command != msg::MSG_CLIENT_2_SERVER_LOGIN_ACK {
-        return Err(NewcamdError::Protocol("expected LOGIN_ACK packet"));
+        return Err(Error::Protocol("expected LOGIN_ACK packet"));
     }
 
     let session_key = derive_login_key(&config.des_key, password_crypt.as_bytes())?;
@@ -492,32 +469,31 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
     let card_data_answer =
         read_network_handshake_msg(&mut stream, &session_key, Some(config.io_timeout)).await?;
     if card_data_answer.command != msg::MSG_CARD_DATA {
-        return Err(NewcamdError::Protocol("expected CARD_DATA packet"));
+        return Err(Error::Protocol("expected CARD_DATA packet"));
     }
 
     let card_caid = card_data_answer
         .data
         .get(1 .. 3)
         .map(|bytes| u16::from_be_bytes([bytes[0], bytes[1]]))
-        .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?;
+        .ok_or(Error::Protocol("invalid CARD_DATA payload"))?;
 
     let ua = card_data_answer
         .data
         .get(3 .. 11)
-        .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?
+        .ok_or(Error::Protocol("invalid CARD_DATA payload"))?
         .try_into()
-        .map_err(|_| NewcamdError::Protocol("invalid CARD_DATA payload"))?;
+        .map_err(|_| Error::Protocol("invalid CARD_DATA payload"))?;
 
     let provider_count = card_data_answer
         .data
         .get(11)
         .copied()
-        .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?
-        as usize;
+        .ok_or(Error::Protocol("invalid CARD_DATA payload"))? as usize;
     let provider_data = card_data_answer
         .data
         .get(12 ..)
-        .ok_or(NewcamdError::Protocol("invalid CARD_DATA payload"))?;
+        .ok_or(Error::Protocol("invalid CARD_DATA payload"))?;
     let providers = provider_data
         .chunks_exact(11)
         .take(provider_count)
@@ -529,7 +505,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         })
         .collect::<Vec<_>>();
     if providers.len() != provider_count {
-        return Err(NewcamdError::Protocol("invalid CARD_DATA provider data"));
+        return Err(Error::Protocol("invalid CARD_DATA provider data"));
     }
     let default_provider = configured_provider;
 
@@ -550,7 +526,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
     })
 }
 
-fn decode_ecm_response(packet: NewcamdPacket) -> Result<EcmResponse> {
+fn decode_ecm_response(packet: Packet) -> Result<EcmResponse> {
     let mut cw = [0_u8; 16];
     if packet.data.is_empty() {
         return Ok(EcmResponse {
@@ -561,7 +537,7 @@ fn decode_ecm_response(packet: NewcamdPacket) -> Result<EcmResponse> {
     }
 
     if packet.data.len() < 16 {
-        return Err(NewcamdError::Protocol(
+        return Err(Error::Protocol(
             "ECM response payload is shorter than 16-byte CW",
         ));
     }
@@ -583,7 +559,7 @@ async fn send_network_message(
     io_timeout: Duration,
 ) -> Result<u16> {
     if payload.len() < 3 {
-        return Err(NewcamdError::Protocol("payload must be at least 3 bytes"));
+        return Err(Error::Protocol("payload must be at least 3 bytes"));
     }
 
     let mut netbuf = Vec::with_capacity(CWS_NETMSGSIZE);
@@ -616,7 +592,7 @@ async fn send_network_message(
 
     timeout(io_timeout, stream.write_all(&to_encrypt))
         .await
-        .map_err(|_| NewcamdError::Protocol("timeout while writing packet"))??;
+        .map_err(|_| Error::Protocol("timeout while writing packet"))??;
 
     Ok(current_msg_id)
 }
@@ -625,7 +601,7 @@ async fn read_network_handshake_msg(
     stream: &mut TcpStream,
     des_key: &[u8; 16],
     io_timeout: Option<Duration>,
-) -> Result<NewcamdPacket> {
+) -> Result<Packet> {
     let mut input_buffer = Vec::with_capacity(CWS_NETMSGSIZE);
 
     loop {
@@ -645,15 +621,13 @@ async fn read_into_buffer(
     let read = if let Some(timeout_duration) = io_timeout {
         timeout(timeout_duration, stream.read_buf(input_buffer))
             .await
-            .map_err(|_| NewcamdError::Protocol("timeout while reading packet"))??
+            .map_err(|_| Error::Protocol("timeout while reading packet"))??
     } else {
         stream.read_buf(input_buffer).await?
     };
 
     if read == 0 {
-        return Err(NewcamdError::Protocol(
-            "connection closed while reading packet",
-        ));
+        return Err(Error::Protocol("connection closed while reading packet"));
     }
 
     Ok(())
@@ -662,7 +636,7 @@ async fn read_into_buffer(
 fn parse_buffered_network_message(
     input_buffer: &mut Vec<u8>,
     des_key: &[u8; 16],
-) -> Result<Option<NewcamdPacket>> {
+) -> Result<Option<Packet>> {
     if input_buffer.len() < 2 {
         return Ok(None);
     }
@@ -670,7 +644,7 @@ fn parse_buffered_network_message(
     let frame_len = u16::from_be_bytes([input_buffer[0], input_buffer[1]]) as usize;
     let total_len = frame_len + 2;
     if total_len > CWS_NETMSGSIZE {
-        return Err(NewcamdError::Protocol(
+        return Err(Error::Protocol(
             "received frame is larger than CWS_NETMSGSIZE",
         ));
     }
@@ -679,7 +653,7 @@ fn parse_buffered_network_message(
     }
 
     let plain_len = decrypt_message(&mut input_buffer[.. total_len], des_key)?;
-    let packet = parse_decrypted_525(&input_buffer[.. plain_len]).ok_or(NewcamdError::Protocol(
+    let packet = parse_decrypted_525(&input_buffer[.. plain_len]).ok_or(Error::Protocol(
         "failed to parse decrypted newcamd525 packet",
     ))?;
     input_buffer.drain(.. total_len);

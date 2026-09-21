@@ -12,8 +12,8 @@ use md5::{
     Md5,
 };
 
-use crate::error::{
-    NewcamdError,
+use crate::{
+    Error,
     Result,
 };
 
@@ -22,7 +22,7 @@ const MD5_CRYPT_B64: &[u8; 64] =
 
 pub fn derive_login_key(key1: &[u8], key2: &[u8]) -> Result<[u8; 16]> {
     if key1.len() != 14 {
-        return Err(NewcamdError::InvalidData(
+        return Err(Error::InvalidData(
             "newcamd key must be exactly 14 bytes".to_string(),
         ));
     }
@@ -45,8 +45,8 @@ pub fn wire_len(plain_len: usize) -> usize {
 }
 
 pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
-    if wire_len(buffer.len()) >= crate::protocol::CWS_NETMSGSIZE {
-        return Err(NewcamdError::Protocol("packet too large"));
+    if wire_len(buffer.len()) >= super::protocol::CWS_NETMSGSIZE {
+        return Err(Error::Protocol("packet too large"));
     }
 
     for _ in 0 .. pad_len(buffer.len()) {
@@ -78,7 +78,7 @@ pub fn encrypt_message(buffer: &mut Vec<u8>, des_key: &[u8; 16]) -> Result<()> {
 
 pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
     if (buffer.len() - 2) % 8 != 0 || (buffer.len() - 2) < 16 {
-        return Err(NewcamdError::Protocol("invalid encrypted payload length"));
+        return Err(Error::Protocol("invalid encrypted payload length"));
     }
 
     let data_len = buffer.len() - 8;
@@ -107,7 +107,7 @@ pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
         checksum ^= *byte;
     }
     if checksum != 0 {
-        return Err(NewcamdError::Crypto("checksum mismatch"));
+        return Err(Error::Crypto("checksum mismatch"));
     }
 
     Ok(data_len)
@@ -250,7 +250,7 @@ mod tests {
         md5_crypt,
         wire_len,
     };
-    use crate::protocol::CWS_NETMSGSIZE;
+    use crate::newcamd::protocol::CWS_NETMSGSIZE;
 
     const KEY: [u8; 16] = [
         0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32,
