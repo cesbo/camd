@@ -58,7 +58,7 @@ pub struct NewcamdConfig {
     pub des_key: [u8; 14],
     pub provider: u32,
     pub connect_timeout: Duration,
-    pub read_timeout: Duration,
+    pub io_timeout: Duration,
 }
 
 impl Default for NewcamdConfig {
@@ -70,12 +70,13 @@ impl Default for NewcamdConfig {
             des_key: [0_u8; 14],
             provider: 0,
             connect_timeout: Duration::from_secs(5),
-            read_timeout: Duration::from_secs(5),
+            io_timeout: Duration::from_secs(5),
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// Header fields of a newcamd message.
+#[derive(Debug, Clone, Copy, Default)]
 pub struct RawRequest {
     pub sid: u16,
     pub caid: u16,
@@ -123,7 +124,7 @@ pub struct Client {
 
 pub struct Connection {
     stream: TcpStream,
-    read_timeout: Duration,
+    io_timeout: Duration,
     msg_id: u16,
     session_key: [u8; 16],
     ecm_rx: mpsc::Receiver<EcmCommand>,
@@ -134,17 +135,13 @@ pub struct Connection {
 }
 
 struct EcmCommand {
-    sid: u16,
-    caid: u16,
-    provider: u32,
+    header: RawRequest,
     payload: Vec<u8>,
     response_tx: oneshot::Sender<Result<EcmResponse>>,
 }
 
 struct EmmCommand {
-    sid: u16,
-    caid: u16,
-    provider: u32,
+    header: RawRequest,
     payload: Vec<u8>,
 }
 
@@ -166,7 +163,7 @@ impl Drop for EcmBusyGuard<'_> {
 
 struct HandshakeState {
     stream: TcpStream,
-    read_timeout: Duration,
+    io_timeout: Duration,
     msg_id: u16,
     session_key: [u8; 16],
     default_provider: u32,
@@ -189,7 +186,7 @@ impl Client {
 
         let connection = Connection {
             stream: handshake.stream,
-            read_timeout: handshake.read_timeout,
+            io_timeout: handshake.io_timeout,
             msg_id: handshake.msg_id,
             session_key: handshake.session_key,
             ecm_rx,
@@ -231,9 +228,11 @@ impl Client {
         patch_payload_len(&mut payload);
         let (response_tx, response_rx) = oneshot::channel();
         let command = EcmCommand {
-            sid: req.sid,
-            caid: self.resolve_caid(req.caid),
-            provider: self.resolve_provider(req.provider),
+            header: RawRequest {
+                sid: req.sid,
+                caid: self.resolve_caid(req.caid),
+                provider: self.resolve_provider(req.provider),
+            },
             payload,
             response_tx,
         };
@@ -254,9 +253,11 @@ impl Client {
         let mut payload = section.to_vec();
         patch_payload_len(&mut payload);
         let command = EmmCommand {
-            sid,
-            caid: self.resolve_caid(caid),
-            provider: self.resolve_provider(provider),
+            header: RawRequest {
+                sid,
+                caid: self.resolve_caid(caid),
+                provider: self.resolve_provider(provider),
+            },
             payload,
         };
 
@@ -375,9 +376,12 @@ impl Connection {
             Some(&mut self.msg_id),
             &self.session_key,
             &payload,
-            packet.header.sid,
-            packet.header.caid,
-            packet.header.provider,
+            RawRequest {
+                sid: packet.header.sid,
+                caid: packet.header.caid,
+                provider: packet.header.provider,
+            },
+            self.io_timeout,
         )
         .await?;
 
@@ -396,15 +400,14 @@ impl Connection {
             Some(&mut self.msg_id),
             &self.session_key,
             &command.payload,
-            command.sid,
-            command.caid,
-            command.provider,
+            command.header,
+            self.io_timeout,
         )
         .await?;
 
         self.pending_ecm = Some(PendingEcm {
             msg_id,
-            deadline: Instant::now() + self.read_timeout,
+            deadline: Instant::now() + self.io_timeout,
             response_tx: command.response_tx,
         });
 
@@ -417,9 +420,8 @@ impl Connection {
             Some(&mut self.msg_id),
             &self.session_key,
             &command.payload,
-            command.sid,
-            command.caid,
-            command.provider,
+            command.header,
+            self.io_timeout,
         )
         .await?;
 
@@ -440,7 +442,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         .map_err(|_| NewcamdError::Protocol("connect timeout"))??;
 
     let mut keymod = [0_u8; LOGIN_INIT_SEQ_LEN];
-    timeout(config.read_timeout, stream.read_exact(&mut keymod))
+    timeout(config.io_timeout, stream.read_exact(&mut keymod))
         .await
         .map_err(|_| NewcamdError::Protocol("timeout while reading server init sequence"))??;
 
@@ -454,10 +456,18 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
     login_data.push(0);
 
     let login_payload = encode_payload(msg::MSG_CLIENT_2_SERVER_LOGIN, &login_data);
-    let _ = send_network_message(&mut stream, None, &login_key, &login_payload, 0, 0, 0).await?;
+    let _ = send_network_message(
+        &mut stream,
+        None,
+        &login_key,
+        &login_payload,
+        RawRequest::default(),
+        config.io_timeout,
+    )
+    .await?;
 
     let login_answer =
-        read_network_handshake_msg(&mut stream, &login_key, Some(config.read_timeout)).await?;
+        read_network_handshake_msg(&mut stream, &login_key, Some(config.io_timeout)).await?;
     let mut msg_id = login_answer.header.msg_id;
 
     if login_answer.command == msg::MSG_CLIENT_2_SERVER_LOGIN_NAK {
@@ -474,14 +484,13 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
         Some(&mut msg_id),
         &session_key,
         &card_data_req,
-        0,
-        0,
-        0,
+        RawRequest::default(),
+        config.io_timeout,
     )
     .await?;
 
     let card_data_answer =
-        read_network_handshake_msg(&mut stream, &session_key, Some(config.read_timeout)).await?;
+        read_network_handshake_msg(&mut stream, &session_key, Some(config.io_timeout)).await?;
     if card_data_answer.command != msg::MSG_CARD_DATA {
         return Err(NewcamdError::Protocol("expected CARD_DATA packet"));
     }
@@ -526,7 +535,7 @@ async fn perform_handshake(config: NewcamdConfig) -> Result<HandshakeState> {
 
     Ok(HandshakeState {
         stream,
-        read_timeout: config.read_timeout,
+        io_timeout: config.io_timeout,
         msg_id,
         session_key,
         default_provider,
@@ -570,9 +579,8 @@ async fn send_network_message(
     msg_id: Option<&mut u16>,
     des_key: &[u8; 16],
     payload: &[u8],
-    sid: u16,
-    caid: u16,
-    provider: u32,
+    header: RawRequest,
+    io_timeout: Duration,
 ) -> Result<u16> {
     if payload.len() < 3 {
         return Err(NewcamdError::Protocol("payload must be at least 3 bytes"));
@@ -590,11 +598,9 @@ async fn send_network_message(
     };
 
     netbuf[2 .. 4].copy_from_slice(&current_msg_id.to_be_bytes());
-    netbuf[4 .. 6].copy_from_slice(&sid.to_be_bytes());
-    netbuf[6 .. 8].copy_from_slice(&caid.to_be_bytes());
-    netbuf[8] = ((provider >> 16) & 0xFF) as u8;
-    netbuf[9] = ((provider >> 8) & 0xFF) as u8;
-    netbuf[10] = (provider & 0xFF) as u8;
+    netbuf[4 .. 6].copy_from_slice(&header.sid.to_be_bytes());
+    netbuf[6 .. 8].copy_from_slice(&header.caid.to_be_bytes());
+    netbuf[8 .. 11].copy_from_slice(&header.provider.to_be_bytes()[1 ..]);
 
     let mut to_encrypt = netbuf;
     let plain_len = to_encrypt.len();
@@ -608,7 +614,9 @@ async fn send_network_message(
     to_encrypt[0] = ((encrypted_wire_len >> 8) & 0xFF) as u8;
     to_encrypt[1] = (encrypted_wire_len & 0xFF) as u8;
 
-    stream.write_all(&to_encrypt).await?;
+    timeout(io_timeout, stream.write_all(&to_encrypt))
+        .await
+        .map_err(|_| NewcamdError::Protocol("timeout while writing packet"))??;
 
     Ok(current_msg_id)
 }
@@ -616,7 +624,7 @@ async fn send_network_message(
 async fn read_network_handshake_msg(
     stream: &mut TcpStream,
     des_key: &[u8; 16],
-    read_timeout: Option<Duration>,
+    io_timeout: Option<Duration>,
 ) -> Result<NewcamdPacket> {
     let mut input_buffer = Vec::with_capacity(CWS_NETMSGSIZE);
 
@@ -625,16 +633,16 @@ async fn read_network_handshake_msg(
             return Ok(packet);
         }
 
-        read_into_buffer(stream, &mut input_buffer, read_timeout).await?;
+        read_into_buffer(stream, &mut input_buffer, io_timeout).await?;
     }
 }
 
 async fn read_into_buffer(
     stream: &mut TcpStream,
     input_buffer: &mut Vec<u8>,
-    read_timeout: Option<Duration>,
+    io_timeout: Option<Duration>,
 ) -> Result<()> {
-    let read = if let Some(timeout_duration) = read_timeout {
+    let read = if let Some(timeout_duration) = io_timeout {
         timeout(timeout_duration, stream.read_buf(input_buffer))
             .await
             .map_err(|_| NewcamdError::Protocol("timeout while reading packet"))??
@@ -697,7 +705,7 @@ mod tests {
         let (emm_tx, emm_rx) = mpsc::channel(1);
         let connection = Connection {
             stream,
-            read_timeout: Duration::from_secs(1),
+            io_timeout: Duration::from_secs(1),
             msg_id: 0,
             session_key: [0; 16],
             ecm_rx,
