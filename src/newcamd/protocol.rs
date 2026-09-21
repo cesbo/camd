@@ -20,7 +20,6 @@ pub struct Header525 {
     pub sid: u16,
     pub caid: u16,
     pub provider: u32,
-    pub flags: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -69,15 +68,12 @@ pub fn parse_decrypted_525(buffer: &[u8]) -> Option<Packet> {
     let sid = u16::from_be_bytes([buffer[4], buffer[5]]);
     let caid = u16::from_be_bytes([buffer[6], buffer[7]]);
     let provider = ((buffer[8] as u32) << 16) | ((buffer[9] as u32) << 8) | (buffer[10] as u32);
-    let flags = buffer[11];
-
     Some(Packet {
         header: Header525 {
             msg_id,
             sid,
             caid,
             provider,
-            flags,
         },
         command: payload[0],
         data: payload[3 ..].to_vec(),

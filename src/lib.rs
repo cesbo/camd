@@ -6,6 +6,9 @@ pub use error::{
     Result,
 };
 
+/// Control word pair as the server returns it: even and odd, 8 bytes each.
+pub type Cw = [u8; 16];
+
 /// Addressing of an ECM or EMM: the service, CA system and provider it belongs to.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct RawRequest {
@@ -21,8 +24,6 @@ pub struct CardData {
     pub au: bool,
     pub ua: [u8; 8],
     pub providers: Vec<CardProvider>,
-    pub provider_count: usize,
-    pub raw_payload: Vec<u8>,
 }
 
 #[derive(Debug, Clone, Copy)]

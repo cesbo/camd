@@ -11,7 +11,6 @@ pub enum Error {
     Protocol(&'static str),
     AuthenticationFailed,
     InvalidData(String),
-    Crypto(&'static str),
 }
 
 impl Display for Error {
@@ -21,7 +20,6 @@ impl Display for Error {
             Self::Protocol(msg) => write!(f, "Protocol error: {msg}"),
             Self::AuthenticationFailed => write!(f, "Authentication failed"),
             Self::InvalidData(msg) => write!(f, "Invalid data: {msg}"),
-            Self::Crypto(msg) => write!(f, "Crypto error: {msg}"),
         }
     }
 }

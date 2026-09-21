@@ -107,7 +107,7 @@ pub fn decrypt_message(buffer: &mut [u8], des_key: &[u8; 16]) -> Result<usize> {
         checksum ^= *byte;
     }
     if checksum != 0 {
-        return Err(Error::Crypto("checksum mismatch"));
+        return Err(Error::Protocol("checksum mismatch"));
     }
 
     Ok(data_len)

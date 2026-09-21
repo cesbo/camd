@@ -48,6 +48,7 @@ use super::{
 use crate::{
     CardData,
     CardProvider,
+    Cw,
     Error,
     RawRequest,
     Result,
@@ -81,21 +82,6 @@ impl Default for Config {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct EcmRequest {
-    pub sid: u16,
-    pub caid: u16,
-    pub provider: u32,
-    pub section: Vec<u8>,
-}
-
-#[derive(Debug, Clone)]
-pub struct EcmResponse {
-    pub found: bool,
-    pub cw: [u8; 16],
-    pub packet: Packet,
-}
-
 pub struct Client {
     ecm_tx: mpsc::Sender<EcmCommand>,
     emm_tx: mpsc::Sender<EmmCommand>,
@@ -119,7 +105,7 @@ pub struct Connection {
 struct EcmCommand {
     header: RawRequest,
     payload: Vec<u8>,
-    response_tx: oneshot::Sender<Result<EcmResponse>>,
+    response_tx: oneshot::Sender<Result<Option<Cw>>>,
 }
 
 struct EmmCommand {
@@ -130,7 +116,7 @@ struct EmmCommand {
 struct PendingEcm {
     msg_id: u16,
     deadline: Instant,
-    response_tx: oneshot::Sender<Result<EcmResponse>>,
+    response_tx: oneshot::Sender<Result<Option<Cw>>>,
 }
 
 struct EcmBusyGuard<'a> {
@@ -181,16 +167,10 @@ impl Client {
         Ok((client, connection))
     }
 
-    pub fn caid(&self) -> u16 {
-        self.caid
-    }
-
-    pub fn default_provider(&self) -> u32 {
-        self.default_provider
-    }
-
-    pub async fn send_ecm(&self, req: &EcmRequest) -> Result<EcmResponse> {
-        check_section(&req.section)?;
+    /// Sends one ECM and waits for the control words, `None` when the server has
+    /// no key for it. Only one ECM may be in flight per connection.
+    pub async fn send_ecm(&self, header: RawRequest, section: &[u8]) -> Result<Option<Cw>> {
+        check_section(section)?;
 
         if self
             .ecm_busy
@@ -204,15 +184,11 @@ impl Client {
             flag: &self.ecm_busy,
         };
 
-        let mut payload = req.section.clone();
+        let mut payload = section.to_vec();
         patch_payload_len(&mut payload);
         let (response_tx, response_rx) = oneshot::channel();
         let command = EcmCommand {
-            header: RawRequest {
-                sid: req.sid,
-                caid: self.resolve_caid(req.caid),
-                provider: self.resolve_provider(req.provider),
-            },
+            header: self.resolve(header),
             payload,
             response_tx,
         };
@@ -228,17 +204,13 @@ impl Client {
     }
 
     /// Queues an EMM without waiting.
-    pub fn send_emm(&self, section: &[u8], sid: u16, caid: u16, provider: u32) -> Result<()> {
+    pub fn send_emm(&self, header: RawRequest, section: &[u8]) -> Result<()> {
         check_section(section)?;
 
         let mut payload = section.to_vec();
         patch_payload_len(&mut payload);
         let command = EmmCommand {
-            header: RawRequest {
-                sid,
-                caid: self.resolve_caid(caid),
-                provider: self.resolve_provider(provider),
-            },
+            header: self.resolve(header),
             payload,
         };
 
@@ -248,19 +220,20 @@ impl Client {
         })
     }
 
-    fn resolve_caid(&self, request_caid: u16) -> u16 {
-        if request_caid == 0 {
-            self.caid
-        } else {
-            request_caid
-        }
-    }
-
-    fn resolve_provider(&self, request_provider: u32) -> u32 {
-        if request_provider == 0 {
-            self.default_provider
-        } else {
-            request_provider
+    /// Zero caid or provider means "the card's own".
+    fn resolve(&self, header: RawRequest) -> RawRequest {
+        RawRequest {
+            sid: header.sid,
+            caid: if header.caid == 0 {
+                self.caid
+            } else {
+                header.caid
+            },
+            provider: if header.provider == 0 {
+                self.default_provider
+            } else {
+                header.provider
+            },
         }
     }
 }
@@ -524,34 +497,18 @@ async fn perform_handshake(config: Config) -> Result<HandshakeState> {
             au: card_data_answer.data[0] == 1,
             ua,
             providers,
-            provider_count,
-            raw_payload: card_data_answer.data,
         },
     })
 }
 
-fn decode_ecm_response(packet: Packet) -> Result<EcmResponse> {
-    let mut cw = [0_u8; 16];
+fn decode_ecm_response(packet: Packet) -> Result<Option<Cw>> {
     if packet.data.is_empty() {
-        return Ok(EcmResponse {
-            found: false,
-            cw,
-            packet,
-        });
+        return Ok(None);
     }
-
-    if packet.data.len() < 16 {
-        return Err(Error::Protocol(
-            "ECM response payload is shorter than 16-byte CW",
-        ));
-    }
-
-    cw.copy_from_slice(&packet.data[.. 16]);
-    Ok(EcmResponse {
-        found: true,
-        cw,
-        packet,
-    })
+    let cw = packet.data.get(.. 16).ok_or(Error::Protocol(
+        "ECM response payload is shorter than 16-byte CW",
+    ))?;
+    Ok(Some(cw.try_into().expect("16-byte slice")))
 }
 
 async fn send_network_message(
@@ -684,15 +641,15 @@ mod tests {
         };
         let emm = [0x82, 0x70, 0x00, 0xAA];
 
-        assert!(client.send_emm(&emm, 0, 0, 0).is_ok());
+        assert!(client.send_emm(RawRequest::default(), &emm).is_ok());
         assert!(matches!(
-            client.send_emm(&emm, 0, 0, 0),
+            client.send_emm(RawRequest::default(), &emm),
             Err(Error::Protocol("EMM queue is full"))
         ));
 
         drop(emm_rx);
         assert!(matches!(
-            client.send_emm(&emm, 0, 0, 0),
+            client.send_emm(RawRequest::default(), &emm),
             Err(Error::Protocol("connection task is not running"))
         ));
     }
@@ -721,8 +678,6 @@ mod tests {
                 au: false,
                 ua: [0; 8],
                 providers: Vec::new(),
-                provider_count: 0,
-                raw_payload: Vec::new(),
             },
         };
         let task = tokio::spawn(connection.run());
