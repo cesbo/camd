@@ -14,7 +14,10 @@ use tokio::{
     },
     net::TcpStream,
     sync::{
-        mpsc,
+        mpsc::{
+            self,
+            error::TrySendError,
+        },
         oneshot,
     },
     time::{
@@ -224,7 +227,8 @@ impl Client {
             .map_err(|_| Error::Protocol("ECM response channel was closed"))?
     }
 
-    pub async fn send_emm(&self, section: &[u8], sid: u16, caid: u16, provider: u32) -> Result<()> {
+    /// Queues an EMM without waiting.
+    pub fn send_emm(&self, section: &[u8], sid: u16, caid: u16, provider: u32) -> Result<()> {
         check_section(section)?;
 
         let mut payload = section.to_vec();
@@ -238,10 +242,10 @@ impl Client {
             payload,
         };
 
-        self.emm_tx
-            .send(command)
-            .await
-            .map_err(|_| Error::Protocol("connection task is not running"))
+        self.emm_tx.try_send(command).map_err(|err| match err {
+            TrySendError::Full(_) => Error::Protocol("EMM queue is full"),
+            TrySendError::Closed(_) => Error::Protocol("connection task is not running"),
+        })
     }
 
     fn resolve_caid(&self, request_caid: u16) -> u16 {
@@ -666,6 +670,32 @@ mod tests {
     use tokio::net::TcpListener;
 
     use super::*;
+
+    #[test]
+    fn send_emm_reports_full_and_closed_queue() {
+        let (ecm_tx, _ecm_rx) = mpsc::channel(1);
+        let (emm_tx, emm_rx) = mpsc::channel(1);
+        let client = Client {
+            ecm_tx,
+            emm_tx,
+            ecm_busy: AtomicBool::new(false),
+            caid: 0x0100,
+            default_provider: 0,
+        };
+        let emm = [0x82, 0x70, 0x00, 0xAA];
+
+        assert!(client.send_emm(&emm, 0, 0, 0).is_ok());
+        assert!(matches!(
+            client.send_emm(&emm, 0, 0, 0),
+            Err(Error::Protocol("EMM queue is full"))
+        ));
+
+        drop(emm_rx);
+        assert!(matches!(
+            client.send_emm(&emm, 0, 0, 0),
+            Err(Error::Protocol("connection task is not running"))
+        ));
+    }
 
     #[tokio::test]
     async fn run_exits_when_client_is_dropped() {
