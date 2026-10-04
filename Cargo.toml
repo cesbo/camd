@@ -1,6 +1,6 @@
 [package]
 name = "camd"
-version = "0.1.0"
+version = "0.2.0"
 description = "Client for DVB conditional access card servers"
 authors = ["Cesbo Developers Team <info@cesbo.com>"]
 license = "MIT"
@@ -20,7 +20,9 @@ tokio = { version = "1", features = [
     "io-util",
     "macros",
     "net",
-    "rt",
     "sync",
     "time",
 ] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt"] }

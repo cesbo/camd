@@ -68,6 +68,7 @@ pub struct Config {
     pub password: String,
     pub des_key: [u8; 14],
     pub provider: u32,
+    pub client_id: u16,
     pub connect_timeout: Duration,
     pub io_timeout: Duration,
 }
@@ -80,6 +81,7 @@ impl Default for Config {
             password: String::new(),
             des_key: [0_u8; 14],
             provider: 0,
+            client_id: 0x0000,
             connect_timeout: Duration::from_secs(5),
             io_timeout: Duration::from_secs(5),
         }
@@ -427,7 +429,10 @@ async fn perform_handshake(config: Config) -> Result<HandshakeState> {
         None,
         &login_key,
         &login_payload,
-        RawRequest::default(),
+        RawRequest {
+            sid: config.client_id,
+            ..Default::default()
+        },
         config.io_timeout,
     )
     .await?;
