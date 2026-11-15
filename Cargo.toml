@@ -1,6 +1,6 @@
 [package]
 name = "camd"
-version = "0.2.0"
+version = "0.2.1"
 description = "Client for DVB conditional access card servers"
 authors = ["Cesbo Developers Team <info@cesbo.com>"]
 license = "MIT"
@@ -10,6 +10,10 @@ repository = "https://github.com/cesbo/camd"
 keywords = ["newcamd", "dvb", "conditional-access", "cam"]
 categories = ["network-programming", "multimedia::video"]
 edition = "2024"
+
+[features]
+# newcamd::TestServer, a card server for the tests of a dependent crate
+test-server = ["tokio/rt"]
 
 [dependencies]
 des = "0.9"

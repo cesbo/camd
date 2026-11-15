@@ -9,6 +9,8 @@ Protocols:
   server keepalive.
 
 The crate implements the client side of the protocol only.
+The `test-server` feature adds `newcamd::TestServer`, a card server for
+tests: one account, one card, no ECM or EMM answers.
 
 ## Usage
 

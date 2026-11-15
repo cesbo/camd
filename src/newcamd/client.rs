@@ -60,6 +60,8 @@ use crate::{
 
 const ECM_QUEUE_CAPACITY: usize = 1;
 const EMM_QUEUE_CAPACITY: usize = 32;
+/// The md5-crypt salt of the login password.
+pub(super) const LOGIN_SALT: &str = "abcdefgh";
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -415,7 +417,7 @@ async fn perform_handshake(config: Config) -> Result<HandshakeState> {
     timeout(config.io_timeout, stream.read_exact(&mut keymod)).await??;
 
     let login_key = derive_login_key(&config.des_key, &keymod)?;
-    let password_crypt = md5_crypt(&config.password, "abcdefgh");
+    let password_crypt = md5_crypt(&config.password, LOGIN_SALT);
 
     let mut login_data = Vec::with_capacity(config.username.len() + password_crypt.len() + 2);
     login_data.extend_from_slice(config.username.as_bytes());
@@ -529,7 +531,7 @@ fn decode_ecm_response(packet: Packet) -> Result<Option<Cw>> {
     Ok(Some(cw.try_into().expect("16-byte slice")))
 }
 
-async fn send_network_message(
+pub(super) async fn send_network_message(
     stream: &mut TcpStream,
     msg_id: Option<&mut u16>,
     des_key: &[u8; 16],
@@ -574,7 +576,7 @@ async fn send_network_message(
     Ok(current_msg_id)
 }
 
-async fn read_network_handshake_msg(
+pub(super) async fn read_network_handshake_msg(
     stream: &mut TcpStream,
     des_key: &[u8; 16],
     io_timeout: Option<Duration>,
@@ -638,30 +640,52 @@ fn parse_buffered_network_message(
 
 #[cfg(test)]
 mod tests {
-    use tokio::net::TcpListener;
-
     use super::*;
+    use crate::newcamd::{
+        TestCard,
+        TestServer,
+    };
 
-    #[test]
-    fn send_emm_reports_full_and_closed_queue() {
-        let (ecm_tx, _ecm_rx) = mpsc::channel(1);
-        let (emm_tx, emm_rx) = mpsc::channel(1);
-        let client = Client {
-            ecm_tx,
-            emm_tx,
-            ecm_busy: AtomicBool::new(false),
-            caid: 0x0100,
-            default_provider: 0,
+    async fn connect() -> (TestServer, Client, Connection) {
+        let card = TestCard {
+            username: "user".to_string(),
+            password: "password".to_string(),
+            des_key: [7; 14],
+            card: CardData {
+                caid: 0x0100,
+                au: false,
+                ua: [0; 8],
+                providers: Vec::new(),
+            },
         };
+        let server = TestServer::start(card.clone()).await.unwrap();
+        let (client, connection) = Client::connect(Config {
+            addr: server.addr(),
+            username: card.username,
+            password: card.password,
+            des_key: card.des_key,
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+        (server, client, connection)
+    }
+
+    #[tokio::test]
+    async fn send_emm_reports_full_and_closed_queue() {
+        // the connection is not run: nothing takes the queue
+        let (_server, client, connection) = connect().await;
         let emm = [0x82, 0x70, 0x00, 0xAA];
 
-        assert!(client.send_emm(RawRequest::default(), &emm).is_ok());
+        for _ in 0 .. EMM_QUEUE_CAPACITY {
+            assert!(client.send_emm(RawRequest::default(), &emm).is_ok());
+        }
         assert!(matches!(
             client.send_emm(RawRequest::default(), &emm),
             Err(Error::Protocol("EMM queue is full"))
         ));
 
-        drop(emm_rx);
+        drop(connection);
         assert!(matches!(
             client.send_emm(RawRequest::default(), &emm),
             Err(Error::Protocol("connection task is not running"))
@@ -670,34 +694,10 @@ mod tests {
 
     #[tokio::test]
     async fn run_exits_when_client_is_dropped() {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let stream = TcpStream::connect(listener.local_addr().unwrap())
-            .await
-            .unwrap();
-        let (_server, _) = listener.accept().await.unwrap();
-
-        let (ecm_tx, ecm_rx) = mpsc::channel(1);
-        let (emm_tx, emm_rx) = mpsc::channel(1);
-        let connection = Connection {
-            addr: stream.peer_addr().unwrap(),
-            stream,
-            io_timeout: Duration::from_secs(1),
-            msg_id: 0,
-            session_key: [0; 16],
-            ecm_rx,
-            emm_rx,
-            pending_ecm: None,
-            input_buffer: Vec::new(),
-            card_data: CardData {
-                caid: 0,
-                au: false,
-                ua: [0; 8],
-                providers: Vec::new(),
-            },
-        };
+        let (_server, client, connection) = connect().await;
         let task = tokio::spawn(connection.run());
 
-        drop((ecm_tx, emm_tx));
+        drop(client);
         let result = timeout(Duration::from_secs(1), task)
             .await
             .expect("run must exit once the senders are gone")
